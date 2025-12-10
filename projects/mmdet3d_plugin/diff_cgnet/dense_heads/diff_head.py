@@ -14,6 +14,8 @@ from ..modules.diffusion import ColdDiffusion
 from ..modules.matcher import HungarianMatcher
 from ..modules.sampler import BezierDeformableAttention
 from ..modules.gnn import TopologyGNN
+from ..modules.jaq import JunctionAwareQuery
+from ..modules.bsc import BezierSpaceConnection
 from ..modules.utils import (
     fit_bezier, 
     bezier_interpolate,
@@ -48,11 +50,16 @@ class DiffusionCenterlineHead(nn.Module):
                  self_cond_prob=0.5,
                  renewal_threshold=0.3,
                  use_gnn=True,
+                 use_jaq=False,
+                 use_bsc=False,
+                 dilate_radius=9,
                  loss_topology=dict(type='BCELoss', loss_weight=1.0)):
         super().__init__()
         
         self.num_classes = num_classes
         self.use_gnn = use_gnn
+        self.use_jaq = use_jaq
+        self.use_bsc = use_bsc
         self.embed_dims = embed_dims
         self.num_queries = num_queries
         self.num_ctrl_points = num_ctrl_points
@@ -79,6 +86,20 @@ class DiffusionCenterlineHead(nn.Module):
                 embed_dim=embed_dims,
                 num_layers=6,
                 dropout=0.1
+            )
+        
+        if self.use_jaq:
+            self.jaq = JunctionAwareQuery(
+                embed_dim=embed_dims,
+                dilate_radius=dilate_radius,
+                use_linear_attn=True
+            )
+        
+        if self.use_bsc:
+            self.bsc = BezierSpaceConnection(
+                embed_dim=embed_dims,
+                num_ctrl_points=num_ctrl_points,
+                num_combined_points=8
             )
         
         self._init_layers()
@@ -207,6 +228,12 @@ class DiffusionCenterlineHead(nn.Module):
         
         ctrl_emb = ctrl_emb + time_emb.unsqueeze(1)
         
+        junction_loss = None
+        if self.use_jaq:
+            ctrl_emb, junction_heatmap, junction_loss = self.jaq(
+                ctrl_emb, bev_features, gt_junctions=None
+            )
+        
         H, W = bev_features.shape[2:]
         spatial_shapes = torch.tensor([[H, W]], device=device)
         
@@ -271,6 +298,13 @@ class DiffusionCenterlineHead(nn.Module):
             noisy_ctrl, bev_features, t, self_cond=self_cond
         )
         
+        bsc_loss = None
+        enhanced_features = features
+        if self.use_bsc and train_config.get('train_bsc', True):
+            bsc_loss, enhanced_features = self.bsc(
+                features, pred_ctrl, None
+            )
+        
         pred_topology = None
         if self.use_gnn and train_config['train_gnn']:
             gnn_input = self.teacher_forcing(
@@ -279,14 +313,16 @@ class DiffusionCenterlineHead(nn.Module):
                 training=True
             )
             
-            pred_topology, pred_topology_logits = self.gnn(gnn_input)
+            gnn_features = enhanced_features if self.use_bsc else gnn_input
+            pred_topology, pred_topology_logits = self.gnn(gnn_features)
         
         losses = self.loss(
             pred_ctrl, pred_logits, features,
             gt_ctrl, gt_labels, gt_mask,
             train_config,
             pred_topology=pred_topology,
-            gt_topology=gt_topology
+            gt_topology=gt_topology,
+            bsc_loss=bsc_loss
         )
         
         return losses
@@ -442,7 +478,7 @@ class DiffusionCenterlineHead(nn.Module):
     
     def loss(self, pred_ctrl, pred_logits, features,
              gt_ctrl, gt_labels, gt_mask, train_config,
-             pred_topology=None, gt_topology=None):
+             pred_topology=None, gt_topology=None, bsc_loss=None):
         """
         计算损失（完整版本）
         """
@@ -495,6 +531,9 @@ class DiffusionCenterlineHead(nn.Module):
                 reduction='mean'
             )
             loss_dict['loss_topology'] = loss_topology * train_config['loss_weights']['topology']
+        
+        if bsc_loss is not None:
+            loss_dict['loss_bsc'] = bsc_loss * train_config['loss_weights'].get('bsc', 0.1)
         
         return loss_dict
     
