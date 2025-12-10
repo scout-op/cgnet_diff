@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 from ..modules.diffusion import ColdDiffusion
 from ..modules.matcher import HungarianMatcher
 from ..modules.sampler import BezierDeformableAttention
+from ..modules.gnn import TopologyGNN
 from ..modules.utils import (
     fit_bezier, 
     bezier_interpolate,
@@ -45,10 +46,13 @@ class DiffusionCenterlineHead(nn.Module):
                  cost_class=1.0,
                  cost_bezier=5.0,
                  self_cond_prob=0.5,
-                 renewal_threshold=0.3):
+                 renewal_threshold=0.3,
+                 use_gnn=True,
+                 loss_topology=dict(type='BCELoss', loss_weight=1.0)):
         super().__init__()
         
         self.num_classes = num_classes
+        self.use_gnn = use_gnn
         self.embed_dims = embed_dims
         self.num_queries = num_queries
         self.num_ctrl_points = num_ctrl_points
@@ -69,6 +73,13 @@ class DiffusionCenterlineHead(nn.Module):
         
         self.teacher_forcing = TeacherForcingModule(noise_std=0.02)
         self.progressive_scheduler = ProgressiveTrainingScheduler()
+        
+        if self.use_gnn:
+            self.gnn = TopologyGNN(
+                embed_dim=embed_dims,
+                num_layers=6,
+                dropout=0.1
+            )
         
         self._init_layers()
         
@@ -93,6 +104,14 @@ class DiffusionCenterlineHead(nn.Module):
             nn.Linear(self.num_ctrl_points * 2, self.embed_dims),
             nn.LayerNorm(self.embed_dims),
             nn.ReLU(inplace=True)
+        )
+        
+        self.bezier_attn = BezierDeformableAttention(
+            embed_dim=self.embed_dims,
+            num_heads=8,
+            num_levels=1,
+            num_points=4,
+            num_sample_points=10
         )
         
         decoder_layer = nn.TransformerDecoderLayer(
@@ -159,7 +178,7 @@ class DiffusionCenterlineHead(nn.Module):
     
     def forward_single_step(self, noisy_ctrl, bev_features, t, self_cond=None):
         """
-        单步去噪
+        单步去噪（完整版本）
         
         Args:
             noisy_ctrl: [B, N, 4, 2]
@@ -188,6 +207,19 @@ class DiffusionCenterlineHead(nn.Module):
         
         ctrl_emb = ctrl_emb + time_emb.unsqueeze(1)
         
+        H, W = bev_features.shape[2:]
+        spatial_shapes = torch.tensor([[H, W]], device=device)
+        
+        bev_sampled_features = self.bezier_attn(
+            query_embed=ctrl_emb,
+            ctrl_points=noisy_ctrl,
+            bev_features=bev_features,
+            spatial_shapes=spatial_shapes,
+            pc_range=self.pc_range
+        )
+        
+        ctrl_emb = ctrl_emb + bev_sampled_features
+        
         bev_flat = bev_features.flatten(2).permute(0, 2, 1)
         
         output = self.transformer_decoder(
@@ -206,14 +238,14 @@ class DiffusionCenterlineHead(nn.Module):
     
     @force_fp32(apply_to=('bev_features',))
     def forward_train(self, bev_features, gt_bboxes_list, gt_labels_list, 
-                     img_metas, epoch=0):
+                     img_metas, epoch=0, gt_topology=None):
         """
-        训练前向传播
+        训练前向传播（完整版本）
         """
         B = len(gt_bboxes_list)
         device = bev_features.device
         
-        train_config = self.progressive_scheduler.get_training_config(epoch)
+        train_config = self.progressive_scheduler.get_training_config(epoch, verbose=True)
         
         gt_ctrl, gt_labels, gt_mask = self.prepare_gt(
             gt_bboxes_list, gt_labels_list, device
@@ -239,17 +271,29 @@ class DiffusionCenterlineHead(nn.Module):
             noisy_ctrl, bev_features, t, self_cond=self_cond
         )
         
+        pred_topology = None
+        if self.use_gnn and train_config['train_gnn']:
+            gnn_input = self.teacher_forcing(
+                pred_ctrl, gt_ctrl, 
+                train_config['teacher_forcing_prob'],
+                training=True
+            )
+            
+            pred_topology, pred_topology_logits = self.gnn(gnn_input)
+        
         losses = self.loss(
             pred_ctrl, pred_logits, features,
             gt_ctrl, gt_labels, gt_mask,
-            train_config
+            train_config,
+            pred_topology=pred_topology,
+            gt_topology=gt_topology
         )
         
         return losses
     
     def forward_test(self, bev_features, img_metas):
         """
-        测试/推理前向传播
+        测试/推理前向传播（完整版本）
         """
         B = bev_features.shape[0]
         device = bev_features.device
@@ -283,7 +327,11 @@ class DiffusionCenterlineHead(nn.Module):
             else:
                 x_t = pred_x0
         
-        results = self.post_process(x_t, pred_logits, img_metas)
+        pred_topology = None
+        if self.use_gnn:
+            pred_topology, _ = self.gnn(x_t)
+        
+        results = self.post_process(x_t, pred_logits, pred_topology, img_metas)
         
         return results
     
@@ -393,9 +441,10 @@ class DiffusionCenterlineHead(nn.Module):
         return ctrl_points
     
     def loss(self, pred_ctrl, pred_logits, features,
-             gt_ctrl, gt_labels, gt_mask, train_config):
+             gt_ctrl, gt_labels, gt_mask, train_config,
+             pred_topology=None, gt_topology=None):
         """
-        计算损失
+        计算损失（完整版本）
         """
         B = pred_ctrl.shape[0]
         
@@ -439,9 +488,17 @@ class DiffusionCenterlineHead(nn.Module):
         loss_dict['loss_cls'] = loss_cls * train_config['loss_weights']['geometry']
         loss_dict['loss_bezier'] = loss_bezier * train_config['loss_weights']['geometry']
         
+        if pred_topology is not None and gt_topology is not None:
+            loss_topology = F.binary_cross_entropy_with_logits(
+                pred_topology,
+                gt_topology.float(),
+                reduction='mean'
+            )
+            loss_dict['loss_topology'] = loss_topology * train_config['loss_weights']['topology']
+        
         return loss_dict
     
-    def post_process(self, ctrl_points, pred_logits, img_metas):
+    def post_process(self, ctrl_points, pred_logits, pred_topology, img_metas):
         """
         后处理：转换为最终输出格式
         """
@@ -465,6 +522,11 @@ class DiffusionCenterlineHead(nn.Module):
                 'scores': scores[mask].cpu().numpy(),
                 'ctrl_points': ctrl_denorm.cpu().numpy()
             }
+            
+            if pred_topology is not None:
+                topology_masked = pred_topology[b][mask][:, mask]
+                result['topology'] = (topology_masked > 0.5).cpu().numpy()
+                result['topology_scores'] = topology_masked.cpu().numpy()
             
             results.append(result)
         
