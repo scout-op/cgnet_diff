@@ -104,4 +104,9 @@ class BezierDeformableAttention(nn.Module):
         
         reference_points = torch.clamp(reference_points, 0.01, 0.99)
         
+        if torch.isnan(reference_points).any() or torch.isinf(reference_points).any():
+            print("Warning: Invalid reference points detected, using fallback")
+            reference_points = torch.clamp(reference_points, 0.01, 0.99)
+            reference_points = torch.nan_to_num(reference_points, nan=0.5, posinf=0.99, neginf=0.01)
+        
         return reference_points

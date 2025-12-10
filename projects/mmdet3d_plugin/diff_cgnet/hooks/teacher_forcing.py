@@ -25,9 +25,13 @@ class ProgressiveTrainingScheduler:
         self.teacher_forcing_start = teacher_forcing_start
         self.teacher_forcing_end = teacher_forcing_end
     
-    def get_training_config(self, current_epoch):
+    def get_training_config(self, current_epoch, verbose=False):
         """
         根据当前epoch返回训练配置
+        
+        Args:
+            current_epoch: int, 当前epoch
+            verbose: bool, 是否打印日志
         
         Returns:
             config: dict, 包含训练参数
@@ -51,6 +55,9 @@ class ProgressiveTrainingScheduler:
             
             tf_prob = self.teacher_forcing_start * (1 - progress) + \
                       self.teacher_forcing_end * progress
+            
+            if verbose:
+                print(f"Epoch {current_epoch}: TF_prob={tf_prob:.3f}, Stage=2")
             
             return {
                 'stage': 2,

@@ -54,18 +54,18 @@ class ColdDiffusion(nn.Module):
     
     def q_sample(self, x_start, t, anchors=None, noise=None):
         """
-        前向扩散过程
+        前向扩散过程（带锚点匹配）
         
         Args:
             x_start: torch.Tensor, shape (B, N, 4, 2), GT贝塞尔控制点
             t: torch.Tensor, shape (B,), 时间步
-            anchors: torch.Tensor, shape (N, 4, 2), 锚点
+            anchors: torch.Tensor, shape (M, 4, 2), 锚点池
             noise: torch.Tensor, 可选的噪声
         
         Returns:
             x_t: torch.Tensor, shape (B, N, 4, 2), 加噪后的控制点
         """
-        B = x_start.shape[0]
+        B, N = x_start.shape[:2]
         device = x_start.device
         
         sqrt_alphas_cumprod_t = self.sqrt_alphas_cumprod[t]
@@ -76,10 +76,26 @@ class ColdDiffusion(nn.Module):
         
         if anchors is not None:
             if anchors.dim() == 3:
-                anchors = anchors.unsqueeze(0).expand(B, -1, -1, -1)
+                M = anchors.shape[0]
+                
+                matched_anchors = []
+                for b in range(B):
+                    x_flat = x_start[b].flatten(1)
+                    anchor_flat = anchors.flatten(1)
+                    
+                    dist_matrix = torch.cdist(x_flat, anchor_flat, p=2)
+                    
+                    matched_indices = dist_matrix.argmin(dim=1)
+                    
+                    matched_anchor = anchors[matched_indices]
+                    matched_anchors.append(matched_anchor)
+                
+                matched_anchors = torch.stack(matched_anchors)
+            else:
+                matched_anchors = anchors
             
             x_t = sqrt_alphas_cumprod_t * x_start + \
-                  sqrt_one_minus_alphas_cumprod_t * anchors
+                  sqrt_one_minus_alphas_cumprod_t * matched_anchors
         else:
             if noise is None:
                 noise = torch.randn_like(x_start)
