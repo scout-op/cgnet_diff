@@ -64,6 +64,42 @@ model = dict(
         use_cold_diffusion=True,
         num_decoder_layers=6,
         pc_range=point_cloud_range,
+        transformer=dict(
+            type='MapTRPerceptionTransformer',
+            rotate_prev_bev=True,
+            use_shift=True,
+            use_can_bus=True,
+            embed_dims=256,
+            encoder=dict(
+                type='BEVFormerEncoder',
+                num_layers=3,
+                pc_range=point_cloud_range,
+                num_points_in_pillar=4,
+                return_intermediate=False,
+                transformerlayers=dict(
+                    type='BEVFormerLayer',
+                    attn_cfgs=[
+                        dict(
+                            type='TemporalSelfAttention',
+                            embed_dims=256,
+                            num_levels=1),
+                        dict(
+                            type='GeometrySptialCrossAttention',
+                            pc_range=point_cloud_range,
+                            attention=dict(
+                                type='GeometryKernelAttention',
+                                embed_dims=256,
+                                num_heads=8,
+                                dilation=1,
+                                kernel_size=(3,5),
+                                num_levels=4),
+                            embed_dims=256,
+                        )
+                    ],
+                    feedforward_channels=512,
+                    ffn_dropout=0.1,
+                    operation_order=('self_attn', 'norm', 'cross_attn', 'norm',
+                                   'ffn', 'norm')))),
         loss_cls=dict(
             type='FocalLoss',
             use_sigmoid=True,
