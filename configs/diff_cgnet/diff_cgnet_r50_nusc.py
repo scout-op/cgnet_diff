@@ -6,14 +6,32 @@ _base_ = [
 plugin = True
 plugin_dir = 'projects/mmdet3d_plugin/'
 
-point_cloud_range = [-15.0, -30.0, -5.0, 15.0, 30.0, 3.0]
-voxel_size = [0.15, 0.15, 8]
+point_cloud_range = [-15.0, -30.0, -2.0, 15.0, 30.0, 2.0]
+voxel_size = [0.15, 0.15, 4]
+
+_dim_ = 256
+_pos_dim_ = _dim_ // 2
+_ffn_dim_ = _dim_ * 2
+_num_levels_ = 1
+bev_h_ = 200
+bev_w_ = 100
+queue_length = 1
+fixed_ptsnum_per_gt_line = 20
+fixed_ptsnum_per_pred_line = 20
+nums_control_pts = 4
+batch_size = 4
 
 img_norm_cfg = dict(
-    mean=[103.530, 116.280, 123.675], std=[1.0, 1.0, 1.0], to_rgb=False
+    mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True
 )
 
-class_names = ['centerline']
+class_names = [
+    'car', 'truck', 'construction_vehicle', 'bus', 'trailer', 'barrier',
+    'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone'
+]
+
+map_classes = ['centerline']
+num_map_classes = len(map_classes)
 
 input_modality = dict(
     use_lidar=False,
@@ -64,15 +82,17 @@ model = dict(
         use_cold_diffusion=True,
         num_decoder_layers=6,
         pc_range=point_cloud_range,
+        bev_h=bev_h_,
+        bev_w=bev_w_,
         transformer=dict(
-            type='MapTRPerceptionTransformer',
+            type='JAPerceptionTransformer',
             rotate_prev_bev=True,
             use_shift=True,
             use_can_bus=True,
-            embed_dims=256,
+            embed_dims=_dim_,
             encoder=dict(
                 type='BEVFormerEncoder',
-                num_layers=3,
+                num_layers=1,
                 pc_range=point_cloud_range,
                 num_points_in_pillar=4,
                 return_intermediate=False,
@@ -88,15 +108,15 @@ model = dict(
                             pc_range=point_cloud_range,
                             attention=dict(
                                 type='GeometryKernelAttention',
-                                embed_dims=256,
-                                num_heads=8,
+                                embed_dims=_dim_,
+                                num_heads=4,
                                 dilation=1,
                                 kernel_size=(3,5),
                                 num_levels=4),
                             embed_dims=256,
                         )
                     ],
-                    feedforward_channels=512,
+                    feedforward_channels=_ffn_dim_,
                     ffn_dropout=0.1,
                     operation_order=('self_attn', 'norm', 'cross_attn', 'norm',
                                    'ffn', 'norm')))),
@@ -118,8 +138,9 @@ model = dict(
     )
 )
 
-dataset_type = 'NuScenesCenterlineDataset'
-data_root = 'data/nuscenes/'
+dataset_type = 'CustomNuScenesLocalMapDataset'
+ann_root = 'data/nuscenes/anns/'
+data_root = 'data/nuscenes'
 file_client_args = dict(backend='disk')
 
 train_pipeline = [
@@ -147,36 +168,67 @@ test_pipeline = [
 ]
 
 data = dict(
-    samples_per_gpu=4,
-    workers_per_gpu=4,
+    samples_per_gpu=batch_size,
+    workers_per_gpu=batch_size,
     train=dict(
         type=dataset_type,
         data_root=data_root,
-        ann_file=data_root + 'nuscenes_infos_temporal_train.pkl',
+        ann_file=ann_root + 'nuscenes_infos_temporal_train.pkl',
         pipeline=train_pipeline,
         classes=class_names,
         modality=input_modality,
         test_mode=False,
+        use_valid_flag=True,
+        bev_size=(bev_h_, bev_w_),
+        pc_range=point_cloud_range,
+        fixed_ptsnum_per_line=fixed_ptsnum_per_gt_line,
+        eval_use_same_gt_sample_num_flag=True,
+        padding_value=-10000,
+        map_classes=map_classes,
+        queue_length=queue_length,
+        only_centerline=True,
+        nums_control_pts=nums_control_pts,
         box_type_3d='LiDAR'
     ),
     val=dict(
         type=dataset_type,
         data_root=data_root,
-        ann_file=data_root + 'nuscenes_infos_temporal_val.pkl',
+        ann_file=ann_root + 'nuscenes_infos_temporal_val.pkl',
+        map_ann_file=ann_root + 'nuscenes_map_anns_val_centerline.json',
+        graph_ann_file=ann_root + 'nuscenes_graph_anns_val.pkl',
         pipeline=test_pipeline,
+        bev_size=(bev_h_, bev_w_),
+        pc_range=point_cloud_range,
+        fixed_ptsnum_per_line=fixed_ptsnum_per_gt_line,
+        eval_use_same_gt_sample_num_flag=True,
+        padding_value=-10000,
+        map_classes=map_classes,
+        only_centerline=True,
+        nums_control_pts=nums_control_pts,
         classes=class_names,
         modality=input_modality,
-        test_mode=True
+        samples_per_gpu=1
     ),
     test=dict(
         type=dataset_type,
         data_root=data_root,
-        ann_file=data_root + 'nuscenes_infos_temporal_val.pkl',
+        ann_file=ann_root + 'nuscenes_infos_temporal_val.pkl',
+        map_ann_file=ann_root + 'nuscenes_map_anns_val_centerline.json',
+        graph_ann_file=ann_root + 'nuscenes_graph_anns_val.pkl',
         pipeline=test_pipeline,
+        bev_size=(bev_h_, bev_w_),
+        pc_range=point_cloud_range,
+        fixed_ptsnum_per_line=fixed_ptsnum_per_gt_line,
+        eval_use_same_gt_sample_num_flag=True,
+        padding_value=-10000,
+        map_classes=map_classes,
+        only_centerline=True,
+        nums_control_pts=nums_control_pts,
         classes=class_names,
-        modality=input_modality,
-        test_mode=True
-    )
+        modality=input_modality
+    ),
+    shuffler_sampler=dict(type='DistributedGroupSampler'),
+    nonshuffler_sampler=dict(type='DistributedSampler')
 )
 
 optimizer = dict(
@@ -201,9 +253,11 @@ lr_config = dict(
 )
 
 total_epochs = 24
-evaluation = dict(interval=24, pipeline=test_pipeline)
+evaluation = dict(interval=24, pipeline=test_pipeline, metric=['chamfer', 'openlane', 'topology'])
 
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
+
+fp16 = dict(loss_scale=512.)
 
 log_config = dict(
     interval=50,
@@ -213,6 +267,8 @@ log_config = dict(
     ]
 )
 
-checkpoint_config = dict(interval=1)
+checkpoint_config = dict(interval=6, save_last=True)
 
+work_dir = None
 find_unused_parameters = True
+seed = 1234
