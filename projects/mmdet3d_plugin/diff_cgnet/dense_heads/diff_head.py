@@ -725,7 +725,10 @@ class DiffusionCenterlineHead(nn.Module):
         results = []
         
         for b in range(B):
-            scores = pred_logits[b].softmax(-1)[:, 0]
+            if self.num_classes == 1:
+                scores = pred_logits[b].sigmoid().squeeze(-1)
+            else:
+                scores = pred_logits[b].softmax(-1)[:, 1]
             
             mask = scores > 0.3
             

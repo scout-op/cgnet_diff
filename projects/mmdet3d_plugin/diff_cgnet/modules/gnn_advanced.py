@@ -182,7 +182,7 @@ class AdvancedTopologyGNN(BaseModule):
     
     def forward(self, lc_query, init_adj=None):
         """
-        前向传播（CGNet原版逻辑）
+        前向传播（输入输出都是[B,N,D]格式）
         
         Args:
             lc_query: [B, N, D], 车道查询特征
@@ -203,22 +203,24 @@ class AdvancedTopologyGNN(BaseModule):
         hidden = None
         adj_logits_list = []
         
+        lc_query_permuted = lc_query.permute(1, 0, 2)
+        
         for layer in range(self.num_layers):
-            out = self.layers(lc_query)
-            out = out.permute(1, 0, 2)
+            out = self.layers(lc_query_permuted)
             
-            out = self.lclc_gnn_layer(out, lclc_adj)
+            out_for_gnn = out.permute(1, 0, 2)
+            out_for_gnn = self.lclc_gnn_layer(out_for_gnn, lclc_adj)
+            out = out_for_gnn.permute(1, 0, 2)
             
             out = self.activate(out)
             out = self.gnn_dropout1(out)
             out = self.downsample(out)
             out = self.gnn_dropout2(out)
             
-            out = out.permute(1, 0, 2)
+            lc_query_permuted = lc_query_permuted + out
             
-            lc_query = lc_query + out
-            
-            hidden = self.gru(lc_query, hidden)
+            lc_query_back = lc_query_permuted.permute(1, 0, 2)
+            hidden = self.gru(lc_query_back, hidden)
             
             adj_logits = self.predict_edges(hidden)
             lclc_adj = torch.sigmoid(adj_logits)
