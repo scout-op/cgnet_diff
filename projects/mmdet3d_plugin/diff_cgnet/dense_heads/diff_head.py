@@ -12,7 +12,6 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 
 from ..modules.diffusion import ColdDiffusion
-from ..modules.matcher import HungarianMatcher
 from ..modules.sampler import BezierDeformableAttention
 from ..modules.gnn_advanced import AdvancedTopologyGNN
 from ..modules.jaq import JunctionAwareQuery
@@ -74,11 +73,6 @@ class DiffusionCenterlineHead(nn.Module):
         self.diffusion = ColdDiffusion(
             num_timesteps=num_diffusion_steps,
             beta_schedule='cosine'
-        )
-        
-        self.matcher = HungarianMatcher(
-            cost_class=cost_class,
-            cost_bezier=cost_bezier
         )
         
         self.teacher_forcing = TeacherForcingModule(noise_std=0.02)
@@ -190,7 +184,12 @@ class DiffusionCenterlineHead(nn.Module):
                 nn.init.xavier_uniform_(p)
         
         bias_init = bias_init_with_prob(0.01)
-        nn.init.constant_(self.cls_head[-1].bias, bias_init)
+        
+        if self.with_multiview_supervision:
+            for cls_branch in self.cls_branches:
+                nn.init.constant_(cls_branch[-1].bias, bias_init)
+        else:
+            nn.init.constant_(self.cls_head[-1].bias, bias_init)
     
     def load_anchors(self, anchor_path='work_dirs/kmeans_anchors.pth'):
         """加载预生成的锚点"""
@@ -212,6 +211,26 @@ class DiffusionCenterlineHead(nn.Module):
             emb = F.pad(emb, (0, 1))
         
         return emb
+    
+    def forward(self, mlvl_feats, img_metas, prev_bev=None, only_bev=False):
+        """
+        统一的forward接口（与DiffCGNet调用）
+        
+        Args:
+            mlvl_feats: 多尺度特征 (list or tensor)
+            img_metas: 图像元数据
+            prev_bev: 历史BEV特征
+            only_bev: 是否只返囮BEV特征
+        
+        Returns:
+            bev_features: BEV特征
+        """
+        if isinstance(mlvl_feats, list):
+            bev_features = mlvl_feats[0]
+        else:
+            bev_features = mlvl_feats
+        
+        return bev_features
     
     def forward_single_step(self, noisy_ctrl, bev_features, t, self_cond=None):
         """
@@ -358,13 +377,13 @@ class DiffusionCenterlineHead(nn.Module):
         
         pred_topology = None
         if self.use_gnn and train_config['train_gnn']:
-            gnn_input = self.teacher_forcing(
+            gnn_ctrl_input = self.teacher_forcing(
                 pred_ctrl, targets, 
                 train_config['teacher_forcing_prob'],
                 training=True
             )
             
-            gnn_features = enhanced_features if self.use_bsc else gnn_input
+            gnn_features = enhanced_features if self.use_bsc else features
             pred_topology, pred_topology_logits = self.gnn(gnn_features)
         
         if self.with_multiview_supervision:
@@ -433,7 +452,7 @@ class DiffusionCenterlineHead(nn.Module):
         
         pred_topology = None
         if self.use_gnn:
-            pred_topology, _ = self.gnn(x_t)
+            pred_topology, _ = self.gnn(features)
         
         results = self.post_process(x_t, pred_logits, pred_topology, img_metas)
         
@@ -603,17 +622,17 @@ class DiffusionCenterlineHead(nn.Module):
         loss_dict = {}
         
         loss_bezier = 0
-        num_pos = pos_mask.sum()
+        num_pos = 0
         
-        if num_pos > 0:
-            for b in range(B):
-                mask_b = pos_mask[b]
-                if mask_b.sum() > 0:
-                    loss_bezier += F.l1_loss(
-                        pred_ctrl[b][mask_b],
-                        targets[b][mask_b],
-                        reduction='mean'
-                    )
+        for b in range(B):
+            mask_b = pos_mask[b]
+            if mask_b.sum() > 0:
+                loss_bezier += F.l1_loss(
+                    pred_ctrl[b][mask_b],
+                    targets[b][mask_b],
+                    reduction='sum'
+                )
+                num_pos += mask_b.sum()
         
         loss_bezier = loss_bezier / max(num_pos, 1)
         
