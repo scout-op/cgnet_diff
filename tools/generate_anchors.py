@@ -182,6 +182,9 @@ def generate_kmeans_anchors(data_root, num_clusters=50, degree=3):
             elif not isinstance(line, np.ndarray):
                 continue
             
+            if line.shape[-1] == 3:
+                line = line[:, :2]
+            
             if len(line) < 2:
                 continue
             
@@ -189,6 +192,8 @@ def generate_kmeans_anchors(data_root, num_clusters=50, degree=3):
                 ctrl = fit_bezier(line, n_control=degree+1)
                 all_bezier_ctrl.append(ctrl.flatten())
             except Exception as e:
+                if len(all_bezier_ctrl) < 5:
+                    print(f"\n警告: 拟合失败 - {e}, line shape: {line.shape}")
                 continue
     
     if len(all_bezier_ctrl) == 0:
