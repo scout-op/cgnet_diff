@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import copy
 from mmdet.models import HEADS
 from mmcv.runner import force_fp32, auto_fp16
 from mmcv.cnn import Linear, bias_init_with_prob
@@ -13,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 from ..modules.diffusion import ColdDiffusion
 from ..modules.matcher import HungarianMatcher
 from ..modules.sampler import BezierDeformableAttention
-from ..modules.gnn import TopologyGNN
+from ..modules.gnn_advanced import AdvancedTopologyGNN
 from ..modules.jaq import JunctionAwareQuery
 from ..modules.bsc import BezierSpaceConnection
 from ..modules.utils import (
@@ -53,6 +54,7 @@ class DiffusionCenterlineHead(nn.Module):
                  use_jaq=False,
                  use_bsc=False,
                  dilate_radius=9,
+                 with_multiview_supervision=True,
                  loss_topology=dict(type='BCELoss', loss_weight=1.0)):
         super().__init__()
         
@@ -60,6 +62,7 @@ class DiffusionCenterlineHead(nn.Module):
         self.use_gnn = use_gnn
         self.use_jaq = use_jaq
         self.use_bsc = use_bsc
+        self.with_multiview_supervision = with_multiview_supervision
         self.embed_dims = embed_dims
         self.num_queries = num_queries
         self.num_ctrl_points = num_ctrl_points
@@ -82,10 +85,13 @@ class DiffusionCenterlineHead(nn.Module):
         self.progressive_scheduler = ProgressiveTrainingScheduler()
         
         if self.use_gnn:
-            self.gnn = TopologyGNN(
-                embed_dim=embed_dims,
-                num_layers=6,
-                dropout=0.1
+            self.gnn = AdvancedTopologyGNN(
+                embed_dims=embed_dims,
+                feedforward_channels=embed_dims * 2,
+                num_fcs=2,
+                ffn_drop=0.1,
+                edge_weight=0.8,
+                num_layers=6
             )
         
         if self.use_jaq:
@@ -135,30 +141,40 @@ class DiffusionCenterlineHead(nn.Module):
             num_sample_points=10
         )
         
-        decoder_layer = nn.TransformerDecoderLayer(
-            d_model=self.embed_dims,
-            nhead=8,
-            dim_feedforward=self.embed_dims * 4,
-            dropout=0.1,
-            activation='relu',
-            batch_first=True
-        )
-        self.transformer_decoder = nn.TransformerDecoder(
-            decoder_layer,
-            num_layers=6
-        )
+        self.decoder_layers = nn.ModuleList([
+            nn.TransformerDecoderLayer(
+                d_model=self.embed_dims,
+                nhead=8,
+                dim_feedforward=self.embed_dims * 4,
+                dropout=0.1,
+                activation='relu',
+                batch_first=True
+            ) for _ in range(6)
+        ])
         
-        self.ctrl_head = nn.Sequential(
+        ctrl_head = nn.Sequential(
             nn.Linear(self.embed_dims, self.embed_dims),
             nn.ReLU(inplace=True),
             nn.Linear(self.embed_dims, self.num_ctrl_points * 2)
         )
         
-        self.cls_head = nn.Sequential(
+        cls_head = nn.Sequential(
             nn.Linear(self.embed_dims, self.embed_dims),
             nn.ReLU(inplace=True),
             nn.Linear(self.embed_dims, self.num_classes)
         )
+        
+        if self.with_multiview_supervision:
+            num_pred = 6
+            self.ctrl_branches = nn.ModuleList([
+                copy.deepcopy(ctrl_head) for _ in range(num_pred)
+            ])
+            self.cls_branches = nn.ModuleList([
+                copy.deepcopy(cls_head) for _ in range(num_pred)
+            ])
+        else:
+            self.ctrl_head = ctrl_head
+            self.cls_head = cls_head
         
         self.confidence_head = nn.Sequential(
             nn.Linear(self.embed_dims, self.embed_dims // 2),
@@ -249,19 +265,39 @@ class DiffusionCenterlineHead(nn.Module):
         
         bev_flat = bev_features.flatten(2).permute(0, 2, 1)
         
-        output = self.transformer_decoder(
-            tgt=ctrl_emb,
-            memory=bev_flat
-        )
-        
-        pred_ctrl_flat = self.ctrl_head(output)
-        pred_ctrl = pred_ctrl_flat.view(B, N, self.num_ctrl_points, 2)
-        
-        pred_ctrl = torch.tanh(pred_ctrl)
-        
-        pred_logits = self.cls_head(output)
-        
-        return pred_ctrl, pred_logits, output
+        if self.with_multiview_supervision:
+            intermediate_outputs = []
+            tgt = ctrl_emb
+            
+            for layer in self.decoder_layers:
+                tgt = layer(tgt, bev_flat)
+                intermediate_outputs.append(tgt)
+            
+            all_pred_ctrl = []
+            all_pred_logits = []
+            
+            for lvl, output in enumerate(intermediate_outputs):
+                pred_ctrl_flat = self.ctrl_branches[lvl](output)
+                pred_ctrl = pred_ctrl_flat.view(B, N, self.num_ctrl_points, 2)
+                pred_ctrl = torch.tanh(pred_ctrl)
+                all_pred_ctrl.append(pred_ctrl)
+                
+                pred_logits = self.cls_branches[lvl](output)
+                all_pred_logits.append(pred_logits)
+            
+            return all_pred_ctrl, all_pred_logits, intermediate_outputs
+        else:
+            tgt = ctrl_emb
+            for layer in self.decoder_layers:
+                tgt = layer(tgt, bev_flat)
+            
+            pred_ctrl_flat = self.ctrl_head(tgt)
+            pred_ctrl = pred_ctrl_flat.view(B, N, self.num_ctrl_points, 2)
+            pred_ctrl = torch.tanh(pred_ctrl)
+            
+            pred_logits = self.cls_head(tgt)
+            
+            return pred_ctrl, pred_logits, tgt
     
     @force_fp32(apply_to=('bev_features',))
     def forward_train(self, bev_features, gt_bboxes_list, gt_labels_list, 
@@ -290,13 +326,25 @@ class DiffusionCenterlineHead(nn.Module):
         self_cond = None
         if torch.rand(1).item() < self.self_cond_prob:
             with torch.no_grad():
-                self_cond, _, _ = self.forward_single_step(
+                outputs = self.forward_single_step(
                     noisy_ctrl, bev_features, t, self_cond=None
                 )
+                if self.with_multiview_supervision:
+                    self_cond = outputs[0][-1]
+                else:
+                    self_cond = outputs[0]
         
-        pred_ctrl, pred_logits, features = self.forward_single_step(
+        outputs = self.forward_single_step(
             noisy_ctrl, bev_features, t, self_cond=self_cond
         )
+        
+        if self.with_multiview_supervision:
+            all_pred_ctrl, all_pred_logits, all_features = outputs
+            pred_ctrl = all_pred_ctrl[-1]
+            pred_logits = all_pred_logits[-1]
+            features = all_features[-1]
+        else:
+            pred_ctrl, pred_logits, features = outputs
         
         bsc_loss = None
         enhanced_features = features
@@ -316,14 +364,24 @@ class DiffusionCenterlineHead(nn.Module):
             gnn_features = enhanced_features if self.use_bsc else gnn_input
             pred_topology, pred_topology_logits = self.gnn(gnn_features)
         
-        losses = self.loss(
-            pred_ctrl, pred_logits, features,
-            gt_ctrl, gt_labels, gt_mask,
-            train_config,
-            pred_topology=pred_topology,
-            gt_topology=gt_topology,
-            bsc_loss=bsc_loss
-        )
+        if self.with_multiview_supervision:
+            losses = self.loss_multi_layer(
+                all_pred_ctrl, all_pred_logits, all_features,
+                gt_ctrl, gt_labels, gt_mask,
+                train_config,
+                pred_topology=pred_topology,
+                gt_topology=gt_topology,
+                bsc_loss=bsc_loss
+            )
+        else:
+            losses = self.loss(
+                pred_ctrl, pred_logits, features,
+                gt_ctrl, gt_labels, gt_mask,
+                train_config,
+                pred_topology=pred_topology,
+                gt_topology=gt_topology,
+                bsc_loss=bsc_loss
+            )
         
         return losses
     
@@ -351,9 +409,16 @@ class DiffusionCenterlineHead(nn.Module):
         for i, t in enumerate(timesteps):
             t_batch = t.repeat(B)
             
-            pred_x0, pred_logits, features = self.forward_single_step(
+            outputs = self.forward_single_step(
                 x_t, bev_features, t_batch, self_cond=None
             )
+            
+            if self.with_multiview_supervision:
+                pred_x0 = outputs[0][-1]
+                pred_logits = outputs[1][-1]
+                features = outputs[2][-1]
+            else:
+                pred_x0, pred_logits, features = outputs
             
             if i < len(timesteps) - 1:
                 x_t = self.diffusion.ddim_sample_step(x_t, pred_x0, t)
@@ -523,6 +588,50 @@ class DiffusionCenterlineHead(nn.Module):
         
         loss_dict['loss_cls'] = loss_cls * train_config['loss_weights']['geometry']
         loss_dict['loss_bezier'] = loss_bezier * train_config['loss_weights']['geometry']
+        
+        if pred_topology is not None and gt_topology is not None:
+            loss_topology = F.binary_cross_entropy_with_logits(
+                pred_topology,
+                gt_topology.float(),
+                reduction='mean'
+            )
+            loss_dict['loss_topology'] = loss_topology * train_config['loss_weights']['topology']
+        
+        if bsc_loss is not None:
+            loss_dict['loss_bsc'] = bsc_loss * train_config['loss_weights'].get('bsc', 0.1)
+        
+        return loss_dict
+    
+    def loss_multi_layer(self, all_pred_ctrl, all_pred_logits, all_features,
+                        gt_ctrl, gt_labels, gt_mask, train_config,
+                        pred_topology=None, gt_topology=None, bsc_loss=None):
+        """
+        多层监督损失（Deep Supervision）
+        """
+        loss_dict = {}
+        
+        num_layers = len(all_pred_ctrl)
+        
+        total_loss_cls = 0
+        total_loss_bezier = 0
+        
+        for lvl in range(num_layers):
+            layer_loss = self.loss(
+                all_pred_ctrl[lvl],
+                all_pred_logits[lvl],
+                all_features[lvl],
+                gt_ctrl, gt_labels, gt_mask,
+                train_config,
+                pred_topology=None,
+                gt_topology=None,
+                bsc_loss=None
+            )
+            
+            total_loss_cls += layer_loss['loss_cls']
+            total_loss_bezier += layer_loss['loss_bezier']
+        
+        loss_dict['loss_cls'] = total_loss_cls / num_layers
+        loss_dict['loss_bezier'] = total_loss_bezier / num_layers
         
         if pred_topology is not None and gt_topology is not None:
             loss_topology = F.binary_cross_entropy_with_logits(
