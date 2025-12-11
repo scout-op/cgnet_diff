@@ -119,7 +119,8 @@ class DiffCGNet(MVXTwoStageDetector):
                          img_metas,
                          gt_bboxes_ignore=None,
                          prev_bev=None,
-                         epoch=0):
+                         epoch=0,
+                         gt_topology=None):
         """
         中心线训练前向传播
         """
@@ -136,7 +137,8 @@ class DiffCGNet(MVXTwoStageDetector):
             gt_bboxes_list=gt_bboxes_3d,
             gt_labels_list=gt_labels_3d,
             img_metas=img_metas,
-            epoch=epoch
+            epoch=epoch,
+            gt_topology=gt_topology
         )
         
         losses = self.pts_bbox_head.forward_train(**loss_inputs)
@@ -155,7 +157,8 @@ class DiffCGNet(MVXTwoStageDetector):
                      gt_bboxes_ignore=None,
                      img_depth=None,
                      img_mask=None,
-                     epoch=0):
+                     epoch=0,
+                     gt_topology=None):
         """
         完整训练前向传播
         """
@@ -181,7 +184,8 @@ class DiffCGNet(MVXTwoStageDetector):
             img_metas,
             gt_bboxes_ignore,
             prev_bev,
-            epoch=epoch
+            epoch=epoch,
+            gt_topology=gt_topology
         )
         
         losses.update(losses_pts)
