@@ -43,6 +43,9 @@ class DiffusionCenterlineHead(nn.Module):
                  use_cold_diffusion=True,
                  num_decoder_layers=6,
                  pc_range=[-15.0, -30.0, -5.0, 15.0, 30.0, 3.0],
+                 bev_h=200,
+                 bev_w=100,
+                 transformer=None,
                  loss_cls=dict(type='FocalLoss', use_sigmoid=True, loss_weight=2.0),
                  loss_bezier=dict(type='L1Loss', loss_weight=5.0),
                  cost_class=1.0,
@@ -54,7 +57,9 @@ class DiffusionCenterlineHead(nn.Module):
                  use_bsc=False,
                  dilate_radius=9,
                  with_multiview_supervision=True,
-                 loss_topology=dict(type='BCELoss', loss_weight=1.0)):
+                 loss_topology=dict(type='BCELoss', loss_weight=1.0),
+                 train_cfg=None,
+                 test_cfg=None):
         super().__init__()
         
         self.num_classes = num_classes
@@ -63,6 +68,11 @@ class DiffusionCenterlineHead(nn.Module):
         self.use_bsc = use_bsc
         self.with_multiview_supervision = with_multiview_supervision
         self.embed_dims = embed_dims
+        self.bev_h = bev_h
+        self.bev_w = bev_w
+        self.transformer = transformer
+        self.train_cfg = train_cfg
+        self.test_cfg = test_cfg
         self.num_queries = num_queries
         self.num_ctrl_points = num_ctrl_points
         self.num_sampling_steps = num_sampling_steps
@@ -103,6 +113,13 @@ class DiffusionCenterlineHead(nn.Module):
             )
         
         self._init_layers()
+        
+        if transformer is not None:
+            from mmcv.utils import build_from_cfg
+            from mmdet.models.utils.builder import TRANSFORMER
+            self.transformer = build_from_cfg(transformer, TRANSFORMER)
+        else:
+            self.transformer = None
         
         self.anchors = None
     
@@ -201,9 +218,10 @@ class DiffusionCenterlineHead(nn.Module):
         """
         生成正弦位置编码（用于时间嵌入）
         """
+        device = timesteps.device
         half_dim = embedding_dim // 2
         emb = torch.log(torch.tensor(10000.0)) / (half_dim - 1)
-        emb = torch.exp(torch.arange(half_dim, dtype=torch.float32) * -emb)
+        emb = torch.exp(torch.arange(half_dim, dtype=torch.float32, device=device) * -emb)
         emb = timesteps.float()[:, None] * emb[None, :]
         emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
         
@@ -249,6 +267,14 @@ class DiffusionCenterlineHead(nn.Module):
         """
         B, N = noisy_ctrl.shape[:2]
         device = noisy_ctrl.device
+        
+        if bev_features.dim() == 5:
+            bev_features = bev_features[:, 0, :, :, :]
+        elif bev_features.dim() == 3:
+            B_bev, C, HW = bev_features.shape
+            H = self.bev_h
+            W = self.bev_w
+            bev_features = bev_features.reshape(B_bev, C, H, W)
         
         time_emb = self.get_sinusoidal_embeddings(t, self.embed_dims).to(device)
         time_emb = self.time_mlp(time_emb)
@@ -636,13 +662,13 @@ class DiffusionCenterlineHead(nn.Module):
         
         loss_bezier = loss_bezier / max(num_pos, 1)
         
-        target_labels = torch.zeros(B, N, device=pred_logits.device, dtype=torch.long)
+        target_labels = torch.zeros(B, N, 1, device=pred_logits.device, dtype=torch.float32)
         for b in range(B):
-            target_labels[b][pos_mask[b]] = gt_labels[b][pos_mask[b]]
+            target_labels[b][pos_mask[b]] = 1.0
         
-        loss_cls = F.cross_entropy(
-            pred_logits.view(B * N, -1),
-            target_labels.view(B * N),
+        loss_cls = F.binary_cross_entropy_with_logits(
+            pred_logits,
+            target_labels,
             reduction='mean'
         )
         
@@ -660,6 +686,8 @@ class DiffusionCenterlineHead(nn.Module):
                 reduction='mean'
             )
             loss_dict['loss_topology'] = loss_topology * train_config['loss_weights']['topology']
+        else:
+            loss_dict['loss_topology'] = torch.tensor(0.0, device=pred_logits.device)
         
         if bsc_loss is not None:
             loss_dict['loss_bsc'] = bsc_loss * train_config['loss_weights'].get('bsc', 0.1)
@@ -711,6 +739,9 @@ class DiffusionCenterlineHead(nn.Module):
                 reduction='mean'
             )
             loss_dict['loss_topology'] = loss_topology * train_config['loss_weights']['topology']
+        else:
+            device = all_pred_ctrl[0].device
+            loss_dict['loss_topology'] = torch.tensor(0.0, device=device)
         
         if bsc_loss is not None:
             loss_dict['loss_bsc'] = bsc_loss * train_config['loss_weights'].get('bsc', 0.1)
