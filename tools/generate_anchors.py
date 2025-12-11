@@ -41,12 +41,17 @@ def generate_kmeans_anchors(data_root, num_clusters=50, degree=3):
     
     all_bezier_ctrl = []
     
-    pkl_path = os.path.join(data_root, 'nuscenes_infos_temporal_train.pkl')
+    pkl_path = os.path.join(data_root, 'anns', 'nuscenes_infos_temporal_train.pkl')
     
     if not os.path.exists(pkl_path):
         print(f"Warning: {pkl_path} not found!")
-        print("Trying alternative path...")
-        pkl_path = os.path.join(data_root, 'nuscenes_infos_train.pkl')
+        print("Trying alternative paths...")
+        
+        pkl_path = os.path.join(data_root, 'nuscenes_infos_temporal_train.pkl')
+        if not os.path.exists(pkl_path):
+            pkl_path = os.path.join(data_root, 'nuscenes_centerline_infos_train.pkl')
+            if not os.path.exists(pkl_path):
+                pkl_path = os.path.join(data_root, 'nuscenes_infos_train.pkl')
     
     print(f"Loading from: {pkl_path}")
     
