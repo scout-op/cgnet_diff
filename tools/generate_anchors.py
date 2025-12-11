@@ -128,33 +128,38 @@ def generate_kmeans_anchors(data_root, num_clusters=50, degree=3):
     print(f"\n示例数据结构:")
     if len(infos) > 0:
         sample = infos[0]
-        print(f"  Keys: {list(sample.keys())[:10]}")
-        if 'gt_bboxes_3d' in sample:
-            print(f"  gt_bboxes_3d type: {type(sample['gt_bboxes_3d'])}")
-            if hasattr(sample['gt_bboxes_3d'], '__dict__'):
-                print(f"  gt_bboxes_3d attrs: {list(vars(sample['gt_bboxes_3d']).keys())[:5]}")
+        print(f"  Keys: {list(sample.keys())[:15]}")
+        if 'center_lines' in sample:
+            print(f"  ✅ 找到center_lines字段")
+            print(f"  center_lines type: {type(sample['center_lines'])}")
+            if isinstance(sample['center_lines'], dict):
+                print(f"  center_lines keys: {list(sample['center_lines'].keys())}")
     
     for info in tqdm(infos, desc="Processing centerlines"):
-        if 'gt_bboxes_3d' not in info:
-            continue
+        centerlines = None
         
-        centerlines = info['gt_bboxes_3d']
+        if 'center_lines' in info:
+            center_lines_data = info['center_lines']
+            
+            if isinstance(center_lines_data, dict):
+                if 'vectors' in center_lines_data:
+                    centerlines = center_lines_data['vectors']
+                elif 'instance_list' in center_lines_data:
+                    centerlines = center_lines_data['instance_list']
+                elif 'lines' in center_lines_data:
+                    centerlines = center_lines_data['lines']
+            elif isinstance(center_lines_data, (list, tuple)):
+                centerlines = center_lines_data
         
-        if hasattr(centerlines, 'instance_list'):
-            centerlines = centerlines.instance_list
-        elif hasattr(centerlines, 'fixed_num'):
-            centerlines = centerlines.fixed_num
-        elif isinstance(centerlines, dict):
-            if 'instance_list' in centerlines:
-                centerlines = centerlines['instance_list']
-            elif 'vectors' in centerlines:
-                centerlines = centerlines['vectors']
-        elif isinstance(centerlines, (list, tuple)):
-            pass
-        else:
-            continue
+        elif 'gt_bboxes_3d' in info:
+            centerlines_data = info['gt_bboxes_3d']
+            
+            if hasattr(centerlines_data, 'instance_list'):
+                centerlines = centerlines_data.instance_list
+            elif hasattr(centerlines_data, 'fixed_num'):
+                centerlines = centerlines_data.fixed_num
         
-        if not isinstance(centerlines, (list, tuple)):
+        if centerlines is None or not isinstance(centerlines, (list, tuple)):
             continue
         
         for line in centerlines:
