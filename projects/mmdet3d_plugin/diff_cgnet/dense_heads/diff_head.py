@@ -310,7 +310,7 @@ class DiffusionCenterlineHead(nn.Module):
         
         train_config = self.progressive_scheduler.get_training_config(epoch, verbose=True)
         
-        gt_ctrl, gt_labels, gt_mask = self.prepare_gt(
+        targets, gt_labels, pos_mask = self.prepare_gt(
             gt_bboxes_list, gt_labels_list, device
         )
         
@@ -321,7 +321,10 @@ class DiffusionCenterlineHead(nn.Module):
         else:
             anchors = self.anchors.to(device)
         
-        noisy_ctrl = self.diffusion.q_sample(gt_ctrl, t, anchors=anchors)
+        if anchors.dim() == 3:
+            anchors = anchors.unsqueeze(0).expand(B, -1, -1, -1)
+        
+        noisy_ctrl = self.diffusion.q_sample(targets, t, anchors=anchors)
         
         self_cond = None
         if torch.rand(1).item() < self.self_cond_prob:
@@ -356,7 +359,7 @@ class DiffusionCenterlineHead(nn.Module):
         pred_topology = None
         if self.use_gnn and train_config['train_gnn']:
             gnn_input = self.teacher_forcing(
-                pred_ctrl, gt_ctrl, 
+                pred_ctrl, targets, 
                 train_config['teacher_forcing_prob'],
                 training=True
             )
@@ -367,7 +370,7 @@ class DiffusionCenterlineHead(nn.Module):
         if self.with_multiview_supervision:
             losses = self.loss_multi_layer(
                 all_pred_ctrl, all_pred_logits, all_features,
-                gt_ctrl, gt_labels, gt_mask,
+                targets, gt_labels, pos_mask,
                 train_config,
                 pred_topology=pred_topology,
                 gt_topology=gt_topology,
@@ -376,7 +379,7 @@ class DiffusionCenterlineHead(nn.Module):
         else:
             losses = self.loss(
                 pred_ctrl, pred_logits, features,
-                gt_ctrl, gt_labels, gt_mask,
+                targets, gt_labels, pos_mask,
                 train_config,
                 pred_topology=pred_topology,
                 gt_topology=gt_topology,
@@ -438,13 +441,21 @@ class DiffusionCenterlineHead(nn.Module):
     
     def prepare_gt(self, gt_bboxes_list, gt_labels_list, device):
         """
-        准备GT数据：转换为贝塞尔控制点
+        准备GT数据：DiffusionDet风格的处理
+        确保GT和Anchor维度对齐
         """
         B = len(gt_bboxes_list)
+        N = self.num_queries
         
-        gt_ctrl_list = []
-        gt_labels_padded = []
-        gt_mask_list = []
+        if self.anchors is None:
+            anchors = self.generate_default_anchors(device)
+        else:
+            anchors = self.anchors.to(device)
+        
+        targets_list = []
+        labels_list = []
+        mask_list = []
+        matched_anchor_indices_list = []
         
         for gt_bboxes, gt_labels in zip(gt_bboxes_list, gt_labels_list):
             if hasattr(gt_bboxes, 'instance_list'):
@@ -460,37 +471,41 @@ class DiffusionCenterlineHead(nn.Module):
                 ctrl = fit_bezier(line, n_control=self.num_ctrl_points)
                 ctrl_points.append(ctrl)
             
-            num_gt = len(ctrl_points)
+            if len(ctrl_points) == 0:
+                targets = anchors.clone()
+                labels = torch.zeros(N, device=device, dtype=torch.long)
+                mask = torch.zeros(N, device=device, dtype=torch.bool)
+                matched_indices = torch.arange(N, device=device)
+            else:
+                M = len(ctrl_points)
+                gt_ctrl = torch.from_numpy(np.stack(ctrl_points)).float().to(device)
+                gt_ctrl_norm = normalize_coords(gt_ctrl, self.pc_range)
+                
+                gt_flat = gt_ctrl_norm.flatten(1)
+                anchor_flat = anchors.flatten(1)
+                dist_matrix = torch.cdist(gt_flat, anchor_flat, p=2)
+                
+                matched_indices = dist_matrix.argmin(dim=1)
+                
+                targets = anchors.clone()
+                targets[matched_indices] = gt_ctrl_norm
+                
+                labels = torch.zeros(N, device=device, dtype=torch.long)
+                labels[matched_indices] = gt_labels[:M]
+                
+                mask = torch.zeros(N, device=device, dtype=torch.bool)
+                mask[matched_indices] = True
             
-            ctrl_tensor = torch.from_numpy(
-                np.stack(ctrl_points)
-            ).float().to(device)
-            
-            ctrl_normalized = normalize_coords(ctrl_tensor, self.pc_range)
-            
-            padded_ctrl = torch.zeros(
-                self.num_queries, self.num_ctrl_points, 2,
-                device=device, dtype=torch.float32
-            )
-            padded_ctrl[:num_gt] = ctrl_normalized
-            
-            padded_labels = torch.zeros(
-                self.num_queries, device=device, dtype=torch.long
-            )
-            padded_labels[:num_gt] = gt_labels[:num_gt]
-            
-            mask = torch.zeros(self.num_queries, device=device, dtype=torch.bool)
-            mask[:num_gt] = True
-            
-            gt_ctrl_list.append(padded_ctrl)
-            gt_labels_padded.append(padded_labels)
-            gt_mask_list.append(mask)
+            targets_list.append(targets)
+            labels_list.append(labels)
+            mask_list.append(mask)
+            matched_anchor_indices_list.append(matched_indices)
         
-        gt_ctrl = torch.stack(gt_ctrl_list)
-        gt_labels = torch.stack(gt_labels_padded)
-        gt_mask = torch.stack(gt_mask_list)
+        targets = torch.stack(targets_list)
+        labels = torch.stack(labels_list)
+        mask = torch.stack(mask_list)
         
-        return gt_ctrl, gt_labels, gt_mask
+        return targets, labels, mask
     
     def generate_default_anchors(self, device):
         """
