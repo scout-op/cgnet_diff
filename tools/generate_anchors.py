@@ -142,7 +142,9 @@ def generate_kmeans_anchors(data_root, num_clusters=50, degree=3):
             center_lines_data = info['center_lines']
             
             if isinstance(center_lines_data, dict):
-                if 'vectors' in center_lines_data:
+                if 'centerlines' in center_lines_data:
+                    centerlines = center_lines_data['centerlines']
+                elif 'vectors' in center_lines_data:
                     centerlines = center_lines_data['vectors']
                 elif 'instance_list' in center_lines_data:
                     centerlines = center_lines_data['instance_list']
