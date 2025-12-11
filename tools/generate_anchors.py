@@ -7,10 +7,70 @@ import argparse
 import matplotlib.pyplot as plt
 import sys
 import os
+from math import factorial
 
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-from projects.mmdet3d_plugin.diff_cgnet.modules.utils import fit_bezier
+def comb(n, k):
+    """组合数 C(n,k)"""
+    return factorial(n) // (factorial(k) * factorial(n - k))
+
+
+def fit_bezier(points, n_control=4):
+    """
+    将点序列拟合为贝塞尔曲线控制点
+    
+    Args:
+        points: np.ndarray, shape (n_points, 2)
+        n_control: int, 控制点数量（默认4，即三次贝塞尔）
+    
+    Returns:
+        control_points: np.ndarray, shape (n_control, 2)
+    """
+    if len(points) < 10:
+        points = np.linspace(points[0], points[-1], num=10)
+    
+    n_points = len(points)
+    A = np.zeros((n_points, n_control))
+    t = np.arange(n_points) / (n_points - 1)
+    
+    for i in range(n_points):
+        for j in range(n_control):
+            A[i, j] = comb(n_control - 1, j) * \
+                      np.power(1 - t[i], n_control - 1 - j) * \
+                      np.power(t[i], j)
+    
+    A_BE = A[:, 1:-1]
+    points_BE = points - np.stack([
+        (A[:, 0] * points[0][0] + A[:, -1] * points[-1][0]),
+        (A[:, 0] * points[0][1] + A[:, -1] * points[-1][1])
+    ]).T
+    
+    try:
+        conts = np.linalg.lstsq(A_BE, points_BE, rcond=None)
+    except:
+        raise Exception("Bezier fitting failed! Check if points are valid.")
+    
+    res = conts[0]
+    fin_res = np.r_[[points[0]], res, [points[-1]]]
+    
+    return fin_res
+
+
+def bezier_interpolate_np(ctrl_points, num_points=50):
+    """
+    贝塞尔曲线插值（numpy版本）
+    """
+    n_control = len(ctrl_points)
+    degree = n_control - 1
+    
+    t = np.linspace(0, 1, num_points)
+    points = np.zeros((num_points, 2))
+    
+    for i in range(n_control):
+        coef = comb(degree, i) * np.power(1 - t, degree - i) * np.power(t, i)
+        points += coef[:, np.newaxis] * ctrl_points[i]
+    
+    return points
 
 
 def parse_args():
@@ -126,8 +186,6 @@ def visualize_anchors(anchors, save_path='work_dirs/anchors_visualization.png'):
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
     axes = axes.flatten()
     
-    from projects.mmdet3d_plugin.diff_cgnet.modules.utils import bezier_interpolate
-    
     for idx, ax in enumerate(axes):
         ax.set_xlim(-15, 15)
         ax.set_ylim(-30, 30)
@@ -141,9 +199,7 @@ def visualize_anchors(anchors, save_path='work_dirs/anchors_visualization.png'):
         end_idx = (idx + 1) * len(anchors) // 4
         
         for anchor in anchors[start_idx:end_idx]:
-            ctrl_tensor = torch.from_numpy(anchor).float().unsqueeze(0)
-            points = bezier_interpolate(ctrl_tensor, num_points=50)
-            points = points.squeeze(0).numpy()
+            points = bezier_interpolate_np(anchor, num_points=50)
             
             ax.plot(points[:, 0], points[:, 1], 'b-', alpha=0.5, linewidth=1)
             ax.plot(anchor[:, 0], anchor[:, 1], 'ro', markersize=3)
