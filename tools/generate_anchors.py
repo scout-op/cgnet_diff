@@ -125,6 +125,15 @@ def generate_kmeans_anchors(data_root, num_clusters=50, degree=3):
     
     print(f"Found {len(infos)} samples")
     
+    print(f"\n示例数据结构:")
+    if len(infos) > 0:
+        sample = infos[0]
+        print(f"  Keys: {list(sample.keys())[:10]}")
+        if 'gt_bboxes_3d' in sample:
+            print(f"  gt_bboxes_3d type: {type(sample['gt_bboxes_3d'])}")
+            if hasattr(sample['gt_bboxes_3d'], '__dict__'):
+                print(f"  gt_bboxes_3d attrs: {list(vars(sample['gt_bboxes_3d']).keys())[:5]}")
+    
     for info in tqdm(infos, desc="Processing centerlines"):
         if 'gt_bboxes_3d' not in info:
             continue
@@ -133,10 +142,26 @@ def generate_kmeans_anchors(data_root, num_clusters=50, degree=3):
         
         if hasattr(centerlines, 'instance_list'):
             centerlines = centerlines.instance_list
+        elif hasattr(centerlines, 'fixed_num'):
+            centerlines = centerlines.fixed_num
+        elif isinstance(centerlines, dict):
+            if 'instance_list' in centerlines:
+                centerlines = centerlines['instance_list']
+            elif 'vectors' in centerlines:
+                centerlines = centerlines['vectors']
+        elif isinstance(centerlines, (list, tuple)):
+            pass
+        else:
+            continue
+        
+        if not isinstance(centerlines, (list, tuple)):
+            continue
         
         for line in centerlines:
             if isinstance(line, torch.Tensor):
                 line = line.cpu().numpy()
+            elif not isinstance(line, np.ndarray):
+                continue
             
             if len(line) < 2:
                 continue
@@ -144,8 +169,18 @@ def generate_kmeans_anchors(data_root, num_clusters=50, degree=3):
             try:
                 ctrl = fit_bezier(line, n_control=degree+1)
                 all_bezier_ctrl.append(ctrl.flatten())
-            except:
+            except Exception as e:
                 continue
+    
+    if len(all_bezier_ctrl) == 0:
+        print("\n❗ 错误: 未收集到任何中心线！")
+        print("\n请检查:")
+        print("  1. 数据文件路径是否正确")
+        print("  2. gt_bboxes_3d的数据格式")
+        print("  3. 是否包含中心线数据")
+        print("\n试用其他数据文件:")
+        print("  python tools/generate_anchors.py --data-root data/nuscenes --use-centerline-file")
+        raise ValueError("未找到任何中心线数据")
     
     all_bezier_ctrl = np.array(all_bezier_ctrl)
     print(f"\n收集到 {len(all_bezier_ctrl)} 条有效中心线")
