@@ -134,6 +134,18 @@ def generate_kmeans_anchors(data_root, num_clusters=50, degree=3):
             print(f"  center_lines type: {type(sample['center_lines'])}")
             if isinstance(sample['center_lines'], dict):
                 print(f"  center_lines keys: {list(sample['center_lines'].keys())}")
+                if 'centerlines' in sample['center_lines']:
+                    cl = sample['center_lines']['centerlines']
+                    print(f"  centerlines type: {type(cl)}")
+                    if isinstance(cl, (list, tuple)) and len(cl) > 0:
+                        print(f"  centerlines length: {len(cl)}")
+                        print(f"  first centerline type: {type(cl[0])}")
+                        if isinstance(cl[0], np.ndarray):
+                            print(f"  first centerline shape: {cl[0].shape}")
+                        elif hasattr(cl[0], 'shape'):
+                            print(f"  first centerline shape: {cl[0].shape}")
+                        else:
+                            print(f"  first centerline: {cl[0][:2] if len(cl[0]) > 2 else cl[0]}")
     
     for info in tqdm(infos, desc="Processing centerlines"):
         centerlines = None
