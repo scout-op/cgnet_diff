@@ -1,17 +1,12 @@
-# ---------------------------------------------
 # Copyright (c) OpenMMLab. All rights reserved.
-# ---------------------------------------------
-#  Modified by Zhiqi Li
-# ---------------------------------------------
-from data_converter.create_gt_database import create_groundtruth_database
-from data_converter import nuscenes_converter as nuscenes_converter
-from data_converter import lyft_converter as lyft_converter
-from data_converter import kitti_converter as kitti
-from data_converter import indoor_converter as indoor
 import argparse
 from os import path as osp
-import sys
-sys.path.append('.')
+
+from tools.data_converter import indoor_converter as indoor
+from tools.data_converter import kitti_converter as kitti
+from tools.data_converter import lyft_converter as lyft_converter
+from tools.data_converter import nuscenes_converter as nuscenes_converter
+from tools.data_converter.create_gt_database import create_groundtruth_database
 
 
 def kitti_data_prep(root_path, info_prefix, version, out_dir):
@@ -50,7 +45,6 @@ def kitti_data_prep(root_path, info_prefix, version, out_dir):
 
 
 def nuscenes_data_prep(root_path,
-                       can_bus_root_path,
                        info_prefix,
                        version,
                        dataset_name,
@@ -70,24 +64,22 @@ def nuscenes_data_prep(root_path,
         max_sweeps (int): Number of input consecutive frames. Default: 10
     """
     nuscenes_converter.create_nuscenes_infos(
-        root_path, out_dir, can_bus_root_path, info_prefix, version=version, max_sweeps=max_sweeps)
+        root_path, info_prefix, version=version, max_sweeps=max_sweeps)
 
     if version == 'v1.0-test':
-        info_test_path = osp.join(
-            out_dir, f'{info_prefix}_infos_temporal_test.pkl')
+        info_test_path = osp.join(root_path, f'{info_prefix}_infos_test.pkl')
         nuscenes_converter.export_2d_annotation(
             root_path, info_test_path, version=version)
-    else:
-        info_train_path = osp.join(
-            out_dir, f'{info_prefix}_infos_temporal_train.pkl')
-        info_val_path = osp.join(
-            out_dir, f'{info_prefix}_infos_temporal_val.pkl')
-        nuscenes_converter.export_2d_annotation(
-            root_path, info_train_path, version=version)
-        nuscenes_converter.export_2d_annotation(
-            root_path, info_val_path, version=version)
-        # create_groundtruth_database(dataset_name, root_path, info_prefix,
-        #                             f'{out_dir}/{info_prefix}_infos_train.pkl')
+        return
+
+    info_train_path = osp.join(root_path, f'{info_prefix}_infos_train.pkl')
+    info_val_path = osp.join(root_path, f'{info_prefix}_infos_val.pkl')
+    nuscenes_converter.export_2d_annotation(
+        root_path, info_train_path, version=version)
+    nuscenes_converter.export_2d_annotation(
+        root_path, info_val_path, version=version)
+    create_groundtruth_database(dataset_name, root_path, info_prefix,
+                                f'{out_dir}/{info_prefix}_infos_train.pkl')
 
 
 def lyft_data_prep(root_path, info_prefix, version, max_sweeps=10):
@@ -166,7 +158,6 @@ def waymo_data_prep(root_path,
     from tools.data_converter import waymo_converter as waymo
 
     splits = ['training', 'validation', 'testing']
-
     for i, split in enumerate(splits):
         load_dir = osp.join(root_path, 'waymo_format', split)
         if split == 'validation':
@@ -183,7 +174,6 @@ def waymo_data_prep(root_path,
     # Generate waymo infos
     out_dir = osp.join(out_dir, 'kitti_format')
     kitti.create_waymo_info_file(out_dir, info_prefix, max_sweeps=max_sweeps)
-
     create_groundtruth_database(
         'WaymoDataset',
         out_dir,
@@ -200,11 +190,6 @@ parser.add_argument(
     type=str,
     default='./data/kitti',
     help='specify the root path of dataset')
-parser.add_argument(
-    '--canbus',
-    type=str,
-    default='./data',
-    help='specify the root path of nuScenes canbus')
 parser.add_argument(
     '--version',
     type=str,
@@ -239,7 +224,6 @@ if __name__ == '__main__':
         train_version = f'{args.version}-trainval'
         nuscenes_data_prep(
             root_path=args.root_path,
-            can_bus_root_path=args.canbus,
             info_prefix=args.extra_tag,
             version=train_version,
             dataset_name='NuScenesDataset',
@@ -248,7 +232,6 @@ if __name__ == '__main__':
         test_version = f'{args.version}-test'
         nuscenes_data_prep(
             root_path=args.root_path,
-            can_bus_root_path=args.canbus,
             info_prefix=args.extra_tag,
             version=test_version,
             dataset_name='NuScenesDataset',
@@ -258,7 +241,6 @@ if __name__ == '__main__':
         train_version = f'{args.version}'
         nuscenes_data_prep(
             root_path=args.root_path,
-            can_bus_root_path=args.canbus,
             info_prefix=args.extra_tag,
             version=train_version,
             dataset_name='NuScenesDataset',

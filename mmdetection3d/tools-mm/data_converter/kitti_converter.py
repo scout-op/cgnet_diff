@@ -100,7 +100,6 @@ def create_kitti_info_file(data_path,
     """
     imageset_folder = Path(data_path) / 'ImageSets'
     train_img_ids = _read_imageset_file(str(imageset_folder / 'train.txt'))
-
     val_img_ids = _read_imageset_file(str(imageset_folder / 'val.txt'))
     test_img_ids = _read_imageset_file(str(imageset_folder / 'test.txt'))
 
@@ -166,9 +165,9 @@ def create_waymo_info_file(data_path,
     """
     imageset_folder = Path(data_path) / 'ImageSets'
     train_img_ids = _read_imageset_file(str(imageset_folder / 'train.txt'))
-    # val_img_ids = _read_imageset_file(str(imageset_folder / 'val.txt'))
-    # test_img_ids = _read_imageset_file(str(imageset_folder / 'test.txt'))
-    train_img_ids = [each for each in train_img_ids if each % 5 == 0]
+    val_img_ids = _read_imageset_file(str(imageset_folder / 'val.txt'))
+    test_img_ids = _read_imageset_file(str(imageset_folder / 'test.txt'))
+
     print('Generate info. this may take several minutes.')
     if save_path is None:
         save_path = Path(data_path)
@@ -192,41 +191,40 @@ def create_waymo_info_file(data_path,
     filename = save_path / f'{pkl_prefix}_infos_train.pkl'
     print(f'Waymo info train file is saved to {filename}')
     mmcv.dump(waymo_infos_train, filename)
-    #
-    # waymo_infos_val = get_waymo_image_info(
-    #     data_path,
-    #     training=True,
-    #     velodyne=True,
-    #     calib=True,
-    #     pose=True,
-    #     image_ids=val_img_ids,
-    #     relative_path=relative_path,
-    #     max_sweeps=max_sweeps)
-    # _calculate_num_points_in_gt(
-    #     data_path,
-    #     waymo_infos_val,
-    #     relative_path,
-    #     num_features=6,
-    #     remove_outside=False)
-    # filename = save_path / f'{pkl_prefix}_infos_val.pkl'
-    # print(f'Waymo info val file is saved to {filename}')
-    # mmcv.dump(waymo_infos_val, filename)
-    # filename = save_path / f'{pkl_prefix}_infos_trainval.pkl'
-    # print(f'Waymo info trainval file is saved to {filename}')
-    # mmcv.dump(waymo_infos_train + waymo_infos_val, filename)
-    # waymo_infos_test = get_waymo_image_info(
-    #     data_path,
-    #     training=False,
-    #     label_info=False,
-    #     velodyne=True,
-    #     calib=True,
-    #     pose=True,
-    #     image_ids=test_img_ids,
-    #     relative_path=relative_path,
-    #     max_sweeps=max_sweeps)
-    # filename = save_path / f'{pkl_prefix}_infos_test.pkl'
-    # print(f'Waymo info test file is saved to {filename}')
-    # mmcv.dump(waymo_infos_test, filename)
+    waymo_infos_val = get_waymo_image_info(
+        data_path,
+        training=True,
+        velodyne=True,
+        calib=True,
+        pose=True,
+        image_ids=val_img_ids,
+        relative_path=relative_path,
+        max_sweeps=max_sweeps)
+    _calculate_num_points_in_gt(
+        data_path,
+        waymo_infos_val,
+        relative_path,
+        num_features=6,
+        remove_outside=False)
+    filename = save_path / f'{pkl_prefix}_infos_val.pkl'
+    print(f'Waymo info val file is saved to {filename}')
+    mmcv.dump(waymo_infos_val, filename)
+    filename = save_path / f'{pkl_prefix}_infos_trainval.pkl'
+    print(f'Waymo info trainval file is saved to {filename}')
+    mmcv.dump(waymo_infos_train + waymo_infos_val, filename)
+    waymo_infos_test = get_waymo_image_info(
+        data_path,
+        training=False,
+        label_info=False,
+        velodyne=True,
+        calib=True,
+        pose=True,
+        image_ids=test_img_ids,
+        relative_path=relative_path,
+        max_sweeps=max_sweeps)
+    filename = save_path / f'{pkl_prefix}_infos_test.pkl'
+    print(f'Waymo info test file is saved to {filename}')
+    mmcv.dump(waymo_infos_test, filename)
 
 
 def _create_reduced_point_cloud(data_path,

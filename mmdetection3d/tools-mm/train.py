@@ -1,7 +1,4 @@
-# ---------------------------------------------
 # Copyright (c) OpenMMLab. All rights reserved.
-# ---------------------------------------------
- 
 from __future__ import division
 
 import argparse
@@ -15,21 +12,14 @@ from mmcv import Config, DictAction
 from mmcv.runner import get_dist_info, init_dist
 from os import path as osp
 
-import sys
-dir_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(dir_path)
-
 from mmdet import __version__ as mmdet_version
 from mmdet3d import __version__ as mmdet3d_version
-#from mmdet3d.apis import train_model
-
+from mmdet3d.apis import train_model
 from mmdet3d.datasets import build_dataset
 from mmdet3d.models import build_model
 from mmdet3d.utils import collect_env, get_root_logger
 from mmdet.apis import set_random_seed
 from mmseg import __version__ as mmseg_version
-
-from mmcv.utils import TORCH_VERSION, digit_version
 
 
 def parse_args():
@@ -112,31 +102,6 @@ def main():
         from mmcv.utils import import_modules_from_strings
         import_modules_from_strings(**cfg['custom_imports'])
 
-    # import modules from plguin/xx, registry will be updated
-    if hasattr(cfg, 'plugin'):
-        if cfg.plugin:
-            import importlib
-            if hasattr(cfg, 'plugin_dir'):
-                plugin_dir = cfg.plugin_dir
-                _module_dir = os.path.dirname(plugin_dir)
-                _module_dir = _module_dir.split('/')
-                _module_path = _module_dir[0]
-
-                for m in _module_dir[1:]:
-                    _module_path = _module_path + '.' + m
-                print(_module_path)
-                plg_lib = importlib.import_module(_module_path)
-            else:
-                # import dir is the dirpath for the config file
-                _module_dir = os.path.dirname(args.config)
-                _module_dir = _module_dir.split('/')
-                _module_path = _module_dir[0]
-                for m in _module_dir[1:]:
-                    _module_path = _module_path + '.' + m
-                print(_module_path)
-                plg_lib = importlib.import_module(_module_path)
-
-            from projects.mmdet3d_plugin.bevformer.apis.train import custom_train_model
     # set cudnn_benchmark
     if cfg.get('cudnn_benchmark', False):
         torch.backends.cudnn.benchmark = True
@@ -149,15 +114,13 @@ def main():
         # use config filename as default work_dir if cfg.work_dir is None
         cfg.work_dir = osp.join('./work_dirs',
                                 osp.splitext(osp.basename(args.config))[0])
-    # if args.resume_from is not None:
-    if args.resume_from is not None and osp.isfile(args.resume_from):
+    if args.resume_from is not None:
         cfg.resume_from = args.resume_from
     if args.gpu_ids is not None:
         cfg.gpu_ids = args.gpu_ids
     else:
         cfg.gpu_ids = range(1) if args.gpus is None else range(args.gpus)
-    if digit_version(TORCH_VERSION) == digit_version('1.8.1') and cfg.optimizer['type'] == 'AdamW':
-        cfg.optimizer['type'] = 'AdamW2' # fix bug in Adamw
+
     if args.autoscale_lr:
         # apply the linear scaling rule (https://arxiv.org/abs/1706.02677)
         cfg.optimizer['lr'] = cfg.optimizer['lr'] * len(cfg.gpu_ids) / 8
@@ -247,7 +210,7 @@ def main():
             if hasattr(datasets[0], 'PALETTE') else None)
     # add an attribute for visualization convenience
     model.CLASSES = datasets[0].CLASSES
-    custom_train_model(
+    train_model(
         model,
         datasets,
         cfg,

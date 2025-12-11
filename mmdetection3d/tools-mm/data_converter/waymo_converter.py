@@ -7,7 +7,7 @@ try:
     from waymo_open_dataset import dataset_pb2
 except ImportError:
     raise ImportError(
-        'Please run "pip install waymo-open-dataset-tf-2-2-0==1.2.0" '
+        'Please run "pip install waymo-open-dataset-tf-2-1-0==1.2.0" '
         'to install the official devkit first.')
 
 import mmcv
@@ -107,9 +107,6 @@ class Waymo2KITTI(object):
 
         for frame_idx, data in enumerate(dataset):
 
-            if frame_idx % 5 != 0:
-                continue
-            # print(frame_idx)
             frame = dataset_pb2.Frame()
             frame.ParseFromString(bytearray(data.numpy()))
             if (self.selected_waymo_locations is not None
