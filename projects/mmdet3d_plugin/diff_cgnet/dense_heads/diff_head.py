@@ -556,58 +556,88 @@ class DiffusionCenterlineHead(nn.Module):
         
         return ctrl_points
     
+    def build_full_topology_target(self, gt_topology, pos_mask, B, N, device):
+        """
+        构建N×N的完整拓扑目标
+        背景线对应的行/列全为0
+        
+        Args:
+            gt_topology: 原始GT拓扑 (M×M or list)
+            pos_mask: [B, N], 标记哪些位置是GT
+            B, N: batch size, num_queries
+            device: torch.device
+        
+        Returns:
+            full_topology: [B, N, N], 完整的拓扑矩阵
+        """
+        full_topology = torch.zeros(B, N, N, device=device)
+        
+        if gt_topology is None:
+            return full_topology
+        
+        for b in range(B):
+            pos_indices = pos_mask[b].nonzero(as_tuple=True)[0]
+            M = len(pos_indices)
+            
+            if M > 0 and gt_topology is not None:
+                if isinstance(gt_topology, list):
+                    gt_topo_b = gt_topology[b]
+                else:
+                    gt_topo_b = gt_topology[b] if gt_topology.dim() == 3 else gt_topology
+                
+                if gt_topo_b.shape[0] == M:
+                    for i in range(M):
+                        for j in range(M):
+                            full_topology[b, pos_indices[i], pos_indices[j]] = gt_topo_b[i, j]
+        
+        return full_topology
+    
     def loss(self, pred_ctrl, pred_logits, features,
-             gt_ctrl, gt_labels, gt_mask, train_config,
+             targets, gt_labels, pos_mask, train_config,
              pred_topology=None, gt_topology=None, bsc_loss=None):
         """
-        计算损失（完整版本）
+        计算损失（使用prepare_gt的匹配结果）
         """
-        B = pred_ctrl.shape[0]
-        
-        indices = self.matcher(pred_ctrl, pred_logits, gt_ctrl, gt_labels)
+        B, N = pred_ctrl.shape[:2]
         
         loss_dict = {}
         
-        loss_cls = 0
         loss_bezier = 0
-        num_pos = 0
+        num_pos = pos_mask.sum()
         
-        for b in range(B):
-            pred_idx, gt_idx = indices[b]
-            
-            valid_gt = gt_mask[b][gt_idx]
-            pred_idx = pred_idx[valid_gt]
-            gt_idx = gt_idx[valid_gt]
-            
-            if len(pred_idx) > 0:
-                loss_bezier += F.l1_loss(
-                    pred_ctrl[b][pred_idx],
-                    gt_ctrl[b][gt_idx],
-                    reduction='mean'
-                )
-                num_pos += len(pred_idx)
-            
-            target = torch.zeros(
-                self.num_queries, device=pred_logits.device, dtype=torch.long
-            )
-            target[pred_idx] = gt_labels[b][gt_idx]
-            
-            loss_cls += F.cross_entropy(
-                pred_logits[b],
-                target,
-                reduction='mean'
-            )
+        if num_pos > 0:
+            for b in range(B):
+                mask_b = pos_mask[b]
+                if mask_b.sum() > 0:
+                    loss_bezier += F.l1_loss(
+                        pred_ctrl[b][mask_b],
+                        targets[b][mask_b],
+                        reduction='mean'
+                    )
         
-        loss_cls = loss_cls / B
         loss_bezier = loss_bezier / max(num_pos, 1)
+        
+        target_labels = torch.zeros(B, N, device=pred_logits.device, dtype=torch.long)
+        for b in range(B):
+            target_labels[b][pos_mask[b]] = gt_labels[b][pos_mask[b]]
+        
+        loss_cls = F.cross_entropy(
+            pred_logits.view(B * N, -1),
+            target_labels.view(B * N),
+            reduction='mean'
+        )
         
         loss_dict['loss_cls'] = loss_cls * train_config['loss_weights']['geometry']
         loss_dict['loss_bezier'] = loss_bezier * train_config['loss_weights']['geometry']
         
         if pred_topology is not None and gt_topology is not None:
+            full_gt_topology = self.build_full_topology_target(
+                gt_topology, pos_mask, B, N, pred_topology.device
+            )
+            
             loss_topology = F.binary_cross_entropy_with_logits(
                 pred_topology,
-                gt_topology.float(),
+                full_gt_topology,
                 reduction='mean'
             )
             loss_dict['loss_topology'] = loss_topology * train_config['loss_weights']['topology']
@@ -649,9 +679,16 @@ class DiffusionCenterlineHead(nn.Module):
         loss_dict['loss_bezier'] = total_loss_bezier / num_layers
         
         if pred_topology is not None and gt_topology is not None:
+            B = all_pred_ctrl[0].shape[0]
+            N = all_pred_ctrl[0].shape[1]
+            
+            full_gt_topology = self.build_full_topology_target(
+                gt_topology, gt_mask, B, N, pred_topology.device
+            )
+            
             loss_topology = F.binary_cross_entropy_with_logits(
                 pred_topology,
-                gt_topology.float(),
+                full_gt_topology,
                 reduction='mean'
             )
             loss_dict['loss_topology'] = loss_topology * train_config['loss_weights']['topology']
