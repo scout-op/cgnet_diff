@@ -117,8 +117,20 @@ def analyze_anchors(anchor_file, output_dir):
     print(f"  总形状: {anchors.shape}")
     
     print(f"\n坐标范围:")
-    print(f"  X: [{anchors[:, :, 0].min():.2f}, {anchors[:, :, 0].max():.2f}]")
-    print(f"  Y: [{anchors[:, :, 1].min():.2f}, {anchors[:, :, 1].max():.2f}]")
+    x_min_all = anchors[:, :, 0].min()
+    x_max_all = anchors[:, :, 0].max()
+    y_min_all = anchors[:, :, 1].min()
+    y_max_all = anchors[:, :, 1].max()
+    print(f"  X: [{x_min_all:.2f}, {x_max_all:.2f}]")
+    print(f"  Y: [{y_min_all:.2f}, {y_max_all:.2f}]")
+    
+    if abs(x_min_all) > 20 or abs(x_max_all) > 20 or abs(y_min_all) > 35 or abs(y_max_all) > 35:
+        print(f"\n  ⚠️  警告: 坐标范围超出预期！")
+        print(f"  预期pc_range: X[-15, 15], Y[-30, 30]")
+        print(f"  实际范围更大，可能需要:")
+        print(f"    1. 检查数据预处理")
+        print(f"    2. 或者调整pc_range配置")
+        print(f"    3. 或者对anchor进行归一化")
     
     print("\n" + "-"*70)
     print("统计分析:")
@@ -235,11 +247,17 @@ def analyze_anchors(anchor_file, output_dir):
     for i, anchor in enumerate(anchors[::5]):
         points = bezier_interpolate(anchor)
         ax.plot(points[:, 0], points[:, 1], alpha=0.5, linewidth=1)
-    ax.set_xlim(-15, 15)
-    ax.set_ylim(-30, 30)
+    
+    x_min, x_max = anchors[:, :, 0].min(), anchors[:, :, 0].max()
+    y_min, y_max = anchors[:, :, 1].min(), anchors[:, :, 1].max()
+    x_margin = (x_max - x_min) * 0.1
+    y_margin = (y_max - y_min) * 0.1
+    
+    ax.set_xlim(x_min - x_margin, x_max + x_margin)
+    ax.set_ylim(y_min - y_margin, y_max + y_margin)
     ax.set_xlabel('X (m)')
     ax.set_ylabel('Y (m)')
-    ax.set_title('Sample Anchors (every 5th)')
+    ax.set_title(f'Sample Anchors (every 5th)\nRange: X[{x_min:.1f}, {x_max:.1f}], Y[{y_min:.1f}, {y_max:.1f}]')
     ax.grid(True, alpha=0.3)
     ax.set_aspect('equal')
     
