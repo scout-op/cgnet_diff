@@ -496,6 +496,7 @@ class DiffusionCenterlineHead(nn.Module):
             anchors = self.generate_default_anchors(device)
         else:
             anchors = self.anchors.to(device)
+            anchors = normalize_coords(anchors, self.pc_range)
         
         targets_list = []
         labels_list = []
