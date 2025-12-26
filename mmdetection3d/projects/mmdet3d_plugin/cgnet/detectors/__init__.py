@@ -1,1 +1,0 @@
-from .CGNet import CGNet

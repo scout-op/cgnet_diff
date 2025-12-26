@@ -1,1 +1,0 @@
-from .CGNet_head import CGTopoHead
